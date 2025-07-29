@@ -2,3 +2,6 @@ myenv/
 backup.log
 Getting started
 *.zip
+@.gitignore
+.env
+token.pkl
