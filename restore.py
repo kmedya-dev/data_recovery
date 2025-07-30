@@ -1,48 +1,190 @@
-
-
 import os
-import json
-import zipfile
+import json # Still needed for potential future use or if other parts of the system rely on it
+import argparse
 from datetime import datetime
 from pathlib import Path
+import time
+import subprocess
+import pickle
 
-def restore_backup(zip_path, metadata_path, restore_to_path):
-    """Restores a backup from a zip file and metadata."""
-    print(f"Extracting {zip_path} to {restore_to_path}...")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(restore_to_path)
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import io
 
-    with open(metadata_path, 'r') as f:
-        metadata = json.load(f)
+# --- CONFIGURATION ---
+SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.readonly']
+CREDENTIALS_FILE = 'credentials.json'
+TOKEN_FILE = 'token.pkl'
+DRIVE_FOLDER_NAME = 'Backups'
 
-    for relative_path, data in metadata.items():
-        file_path = restore_to_path / relative_path
-        if file_path.exists():
-            access_time = datetime.fromisoformat(data['access_time']).timestamp()
-            modified_time = datetime.fromisoformat(data['modified_time']).timestamp()
-            print(f"Restoring timestamps for {relative_path}...")
-            os.utime(file_path, (access_time, modified_time))
+# IMPORTANT: Set the same strong password used for 7z archive encryption in backup.py.
+COMPRESSION_PASSWORD = "YourSecure7zPasswordHere"
 
-    print("\nRestore completed successfully!")
+def authenticate_google_drive():
+    """Authenticates with Google Drive API."""
+    creds = None
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'rb') as token:
+            creds = pickle.load(token)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CREDENTIALS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0, open_browser=False)
+        with open(TOKEN_FILE, 'wb') as token:
+            pickle.dump(creds, token)
+    return creds
 
-def main():
-    """Main function to run the restore script."""
-    zip_file = input("Enter the path to the backup .zip file: ")
-    metadata_file = input("Enter the path to the metadata.json file: ")
-    restore_location = input("Enter the directory to restore to (e.g., /path/to/restore): ")
+def list_drive_backups(credentials, drive_folder_name):
+    """Lists .7z backup files in the specified Google Drive folder."""
+    try:
+        service = build('drive', 'v3', credentials=credentials)
 
-    zip_path = Path(zip_file)
-    metadata_path = Path(metadata_file)
-    restore_to_path = Path(restore_location)
+        # Find the 'Backups' folder ID
+        results = service.files().list(
+            q=f"name='{drive_folder_name}' and mimeType='application/vnd.google-apps.folder'",
+            spaces='drive',
+            fields='files(id)'
+        ).execute()
+        
+        items = results.get('files', [])
+        if not items:
+            print(f"Error: '{drive_folder_name}' folder not found in Google Drive.")
+            return []
+        folder_id = items[0]['id']
 
-    if not zip_path.is_file() or not metadata_path.is_file():
-        print("Error: Backup or metadata file not found.")
+        # List .7z files within the 'Backups' folder
+        print(f"Listing .7z files in '{drive_folder_name}'...")
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and mimeType='application/x-7z-compressed'",
+            spaces='drive',
+            fields='files(id, name, size, modifiedTime)'
+        ).execute()
+        
+        backups = results.get('files', [])
+        return sorted(backups, key=lambda x: x['modifiedTime'], reverse=True)
+
+    except Exception as e:
+        print(f"An error occurred while listing Drive backups: {e}")
+        return []
+
+def download_file_from_drive(file_id, file_name, destination_path, credentials):
+    """Downloads a file from Google Drive."""
+    try:
+        service = build('drive', 'v3', credentials=credentials)
+        request = service.files().get_media(fileId=file_id)
+        fh = io.FileIO(destination_path, 'wb')
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        print(f"Downloading '{file_name}'...")
+        while done is False:
+            status, done = downloader.next_chunk()
+            if status:
+                print(f"Download {int(status.progress() * 100)}%.")
+        print(f"Download complete: {destination_path}")
+        return True
+    except Exception as e:
+        print(f"Error downloading file '{file_name}': {e}")
+        return False
+
+def restore_backup(archive_file_path, target_dir, password):
+    """Restores a backup from a .7z file to the target directory."""
+    archive_path = Path(archive_file_path)
+    target_path = Path(target_dir)
+
+    if not archive_path.is_file():
+        print(f"Error: 7z archive file not found at {archive_path}")
         return
 
-    restore_to_path.mkdir(parents=True, exist_ok=True)
+    target_path.mkdir(parents=True, exist_ok=True)
 
-    restore_backup(zip_path, metadata_path, restore_to_path)
+    print(f"Extracting {archive_path} to {target_path}...")
+    try:
+        # 7z x: extract with full paths, -p: password, -aoa: overwrite all existing files
+        # Timestamps are preserved by default with 7z extraction
+        command = [
+            "7z", "x",
+            f"-p{password}",
+            str(archive_path),
+            f"-o{target_path}",
+            "-aoa" # Overwrite all existing files without prompt
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        print(result.stdout)
+        if result.stderr:
+            print(f"7z stderr: {result.stderr}")
+        print("Extraction complete.")
+
+        print("\nRestore process complete!")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error: 7z extraction failed. Return code: {e.returncode}")
+        print(f"Stdout: {e.stdout}")
+        print(f"Stderr: {e.stderr}")
+    except FileNotFoundError:
+        print("Error: '7z' command not found. Please ensure p7zip is installed and in your PATH.")
+    except Exception as e:
+        print(f"An unexpected error occurred during restore: {e}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Restore a backup from a .7z file.")
+    parser.add_argument("--archive_file", help="Path to a local .7z archive to restore.")
+    parser.add_argument("--target_dir", default=str(Path.cwd() / "restored_data"),
+                        help="The directory where the backup should be restored (default: current_dir/restored_data)")
+    parser.add_argument("--from_drive", action="store_true",
+                        help="List and download a backup from Google Drive before restoring.")
+    
+    args = parser.parse_args()
+
+    if args.from_drive:
+        creds = authenticate_google_drive()
+        if not creds:
+            print("Google Drive authentication failed. Cannot list/download from Drive.")
+            return
+
+        backups = list_drive_backups(creds, DRIVE_FOLDER_NAME)
+        if not backups:
+            print("No .7z backups found in Google Drive.")
+            return
+
+        print("\nAvailable Backups on Google Drive:")
+        for i, b in enumerate(backups):
+            size_gb = float(b.get('size', 0)) / (1024**3)
+            mod_time = datetime.fromisoformat(b.get('modifiedTime').replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"{i+1}) {b.get('name')} (Size: {size_gb:.2f} GB, Modified: {mod_time})")
+        
+        while True:
+            try:
+                choice = int(input("Enter the number of the backup to restore: "))
+                if 1 <= choice <= len(backups):
+                    selected_backup = backups[choice - 1]
+                    break
+                else:
+                    print("Invalid choice. Please enter a number within the range.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
+        download_path = Path(args.target_dir).parent / selected_backup['name'] # Download to parent of target_dir
+        Path(args.target_dir).parent.mkdir(parents=True, exist_ok=True)
+
+        if download_file_from_drive(selected_backup['id'], selected_backup['name'], download_path, creds):
+            restore_backup(download_path, args.target_dir, COMPRESSION_PASSWORD)
+            # Optional: Clean up downloaded archive after successful restore
+            if download_path.exists():
+                os.remove(download_path)
+                print(f"Cleaned up downloaded archive: {download_path}")
+        else:
+            print("Failed to download backup from Google Drive.")
+
+    elif args.archive_file:
+        restore_backup(Path(args.archive_file), Path(args.target_dir), COMPRESSION_PASSWORD)
+    else:
+        parser.print_help()
+        print("\nError: You must specify either --archive_file or --from_drive.")
 
 if __name__ == "__main__":
     main()
-
