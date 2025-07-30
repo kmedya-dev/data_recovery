@@ -9,7 +9,7 @@ This comprehensive system provides robust backup, synchronization, and restore c
 *   **Intelligent Cleanup**: Optionally deletes old backups from Google Drive to maintain a specified storage limit.
 *   **Local Cleanup**: Option to delete local archives after successful upload or restore.
 *   **Detailed Logging**: Logs every step, including compression details, upload status, and errors, with timestamps.
-*   **File Integrity Check**: Verifies uploaded files on Google Drive using checksums (shell script) or direct API verification (Python scripts).
+*   **File Integrity Check**: Verifies uploaded files on Google Drive using direct API verification (Python scripts) or checksums (shell script).
 *   **Flexible Operation**: Supports both interactive CLI usage and headless automation (e.g., via cron).
 *   **Modular & Configurable**: Uses separate configuration files for easy customization.
 *   **Non-Root Operation**: Designed to work entirely within Termux without requiring root privileges.
@@ -28,12 +28,11 @@ Before you begin, ensure you have the following installed in your Termux environ
 Run this one-liner in your Termux terminal:
 
 ```bash
-pkg install p7zip rclone jq python python-pip
+pkg install p7zip rclone python python-pip
 ```
 
 *   `p7zip`: Provides the `7z` command for compression and decompression.
 *   `rclone`: A powerful command-line tool for managing files on cloud storage (used by `backup_sync_restore.sh`).
-*   `jq`: A lightweight and flexible command-line JSON processor (used by `backup_sync_restore.sh`).
 *   `python`: The Python interpreter.
 *   `python-pip`: Python's package installer.
 
@@ -83,7 +82,8 @@ For the `backup_sync_restore.sh` script, you need to configure `rclone` to conne
 2.  **Make Scripts Executable**:
     ```bash
     chmod +x backup_sync_restore.sh
-    chmod +x config.sh
+    chmod +x backup.py
+    chmod +x restore.py
     ```
 
 3.  **Configure `config.sh`**:
@@ -91,7 +91,6 @@ For the `backup_sync_restore.sh` script, you need to configure `rclone` to conne
     *   `LOCAL_BACKUPS_DIR`: Where local `.7z` archives are temporarily stored.
     *   `LOCAL_RESTORE_DIR`: Where restored files will be extracted.
     *   `LOG_DIR`: Where log files (`backup.log`, `restore.log`, `system.log`) will be stored.
-    *   `COMPRESSION_PASSWORD`: **CRITICAL! Set a strong password here.** This password is used for 7z archive encryption and decryption. **Ensure this matches the password set in `backup.py` and `restore.py`.**
     *   `UPLOAD_RETRIES`: Number of retries for network operations.
     *   `RCLONE_REMOTE_NAME`: The name you gave your Google Drive remote during `rclone config`.
     *   `RCLONE_DRIVE_FOLDER`: The name of the folder in Google Drive for backups (e.g., `Backups`).
@@ -101,13 +100,47 @@ For the `backup_sync_restore.sh` script, you need to configure `rclone` to conne
     *   `CLEANUP_LOCAL_AFTER_RESTORE`: `true` to delete downloaded archive after successful restore.
 
 4.  **Configure Python Scripts (`backup.py`, `restore.py`)**:
-    Open `backup.py` and `restore.py`. Locate the `COMPRESSION_PASSWORD` variable and **ensure it matches the one set in `config.sh`**.
+    Open `backup.py` and `restore.py`. Locate the `COMPRESSION_PASSWORD` variable and **set a strong password here.** This password is used for 7z archive encryption and decryption. **Ensure this password is identical in both `backup.py` and `restore.py`.**
 
 ## Usage
 
-### Using `backup_sync_restore.sh` (Recommended for full automation)
+This system offers both Python-based scripts (primary) and a shell script (utility) for backup and restore operations.
 
-This script provides a unified interface for backup and restore.
+### Using `backup.py` (Primary Python-based backup)
+
+This script focuses solely on backup and Google Drive upload using Python libraries.
+
+```bash
+python3 backup.py <source_directory> [--destination_dir <path>] [--cleanup] [--clean-all-zips] [--dry-run-cleanup]
+```
+
+*   `<source_directory>`: The folder to backup.
+*   `--destination_dir`: (Optional) Where to store the local `.7z` file (defaults to current directory).
+*   `--cleanup`: (Optional) Delete the newly created local `.7z` file after successful upload.
+*   `--clean-all-zips`: (Optional) Delete *all* `.7z` files in the `destination_dir` after backup/upload.
+*   `--dry-run-cleanup`: (Optional) Simulate `--clean-all-zips` without actual deletion.
+
+### Using `restore.py` (Primary Python-based restore)
+
+This script focuses solely on restore operations using Python libraries.
+
+*   **Restore from Google Drive**:
+    ```bash
+    python3 restore.py --from_drive [--target_dir <path>]
+    ```
+    This will list available `.7z` backups from your Google Drive `Backups` folder, allow you to select one, download it, and then extract it to `--target_dir`.
+
+*   **Restore from Local Archive**:
+    ```bash
+    python3 restore.py --archive_file /path/to/your/local_backup.7z [--target_dir <path>]
+    ```
+    This will extract the specified local `.7z` archive to `--target_dir`.
+
+*   `--target_dir`: (Optional) The directory where the backup should be restored (defaults to `current_dir/restored_data`).
+
+### Using `backup_sync_restore.sh` (Utility Shell Script)
+
+This script provides a unified interface for backup and restore, useful for quick testing or specific automation needs.
 
 *   **Interactive Mode**:
     Run without arguments to enter an interactive menu:
@@ -128,38 +161,6 @@ This script provides a unified interface for backup and restore.
     ```bash
     ./backup_sync_restore.sh restore
     ```
-
-### Using `backup.py` (Python-based backup)
-
-This script focuses solely on backup and Google Drive upload using Python libraries.
-
-```bash
-python3 backup.py <source_directory> [--destination_dir <path>] [--cleanup] [--clean-all-zips] [--dry-run-cleanup]
-```
-
-*   `<source_directory>`: The folder to backup.
-*   `--destination_dir`: (Optional) Where to store the local `.7z` file (defaults to current directory).
-*   `--cleanup`: (Optional) Delete the newly created local `.7z` file after successful upload.
-*   `--clean-all-zips`: (Optional) Delete *all* `.7z` files in the `destination_dir` after backup/upload.
-*   `--dry-run-cleanup`: (Optional) Simulate `--clean-all-zips` without actual deletion.
-
-### Using `restore.py` (Python-based restore)
-
-This script focuses solely on restore operations using Python libraries.
-
-*   **Restore from Google Drive**:
-    ```bash
-    python3 restore.py --from_drive [--target_dir <path>]
-    ```
-    This will list available `.7z` backups from your Google Drive `Backups` folder, allow you to select one, download it, and then extract it to `--target_dir`.
-
-*   **Restore from Local Archive**:
-    ```bash
-    python3 restore.py --archive_file /path/to/your/local_backup.7z [--target_dir <path>]
-    ```
-    This will extract the specified local `.7z` archive to `--target_dir`.
-
-*   `--target_dir`: (Optional) The directory where the backup should be restored (defaults to `current_dir/restored_data`).
 
 ## Logging
 
@@ -183,16 +184,16 @@ For automated backups, you can set up a cron job in Termux.
 
 ## Security Considerations
 
-*   **`COMPRESSION_PASSWORD`**: This is the most critical security aspect. Use a strong, unique password. Do not hardcode sensitive passwords in production environments; consider using environment variables or secure prompt methods.
+*   **`COMPRESSION_PASSWORD`**: This is the most critical security aspect. Use a strong, unique password. Do not hardcode sensitive passwords in production environments; consider using environment variables or secure prompt methods. **Ensure this password is identical in both `backup.py` and `restore.py`.**
 *   **`credentials.json`**: Keep this file secure. It grants access to your Google Drive. Do not share it or commit it to public repositories.
 *   **`token.pkl`**: This file stores your Google Drive authentication tokens. Treat it with the same care as `credentials.json`.
 
 ## Troubleshooting
 
-*   **"command not found"**: Ensure all prerequisites (`p7zip`, `rclone`, `jq`, Python libraries) are installed correctly.
+*   **"command not found"**: Ensure all prerequisites (`p7zip`, `rclone`, Python libraries) are installed correctly.
 *   **`rclone` authentication issues**: Re-run `rclone config` and ensure you complete the authentication flow correctly.
-*   **"Permission denied"**: Ensure your scripts are executable (`chmod +x script_name.sh`) and that Termux has storage permissions (`termux-setup-storage`).
+*   **"Permission denied"**: Ensure your scripts are executable (`chmod +x script_name.sh`, `chmod +x backup.py`, `chmod +x restore.py`) and that Termux has storage permissions (`termux-setup-storage`).
 *   **"could not locate runnable browser" (Python scripts)**: This is handled by the scripts printing a URL for manual authentication.
-*   **7z password issues**: Ensure the `COMPRESSION_PASSWORD` is identical across `config.sh`, `backup.py`, and `restore.py`.
+*   **7z password issues**: Ensure the `COMPRESSION_PASSWORD` is identical in `backup.py` and `restore.py`.
 
 ---

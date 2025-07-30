@@ -2,8 +2,10 @@ myenv/
 backup.log
 Getting started
 *.zip
+*.7z
 @.gitignore
 .env
 token.pkl
 credentials.json
 *.sh
+restored_data/
